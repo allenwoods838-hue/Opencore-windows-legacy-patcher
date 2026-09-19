@@ -11,6 +11,7 @@ Open **Terminal** and run these commands to install requirements:
 ```bash
 # 1. Install the GUI library
 pip3 install customtkinter
+```
 
 
 # 2. Install wimlib (required to handle large Windows files)
@@ -20,19 +21,18 @@ brew install wimlib
 # If using MacPorts:
 sudo port install wimlib tk +quartz
 
----
 
-🚀 How to Run
+## 🚀 How to Run
 Launch the modern graphical interface:
 
 ```Bash
 sudo python3 gui.py
 
 (Or run sudo python3 main.py for the terminal version).
+```
 
----
 
-**🛠 How to Use**
+##🛠 How to Use
 Target Model: Leave on default (Host Mac), or check "Build for another Mac" to pick an older Mac model.
 Select ISO: Choose your downloaded Windows 10 or 11 .iso file.
 Select USB: Pick your plugged-in USB flash drive (8 GB or larger).
@@ -40,13 +40,13 @@ Build: Click Build Windows Installer and wait for it to complete.
 
 ---
 
-**💻 Installing Windows on Your Mac**
+##💻 Installing Windows on Your Mac
 Partition: Open macOS Disk Utility, click Partition, and create a new partition named BOOTCAMP formatted as MS-DOS (FAT).
 Boot: Restart your Mac and immediately hold down the Option (Alt) key. Select the yellow EFI Boot icon, then choose Windows.
 Install: In Windows setup, select the BOOTCAMP partition, click Format, and proceed.
 Drivers: Once on the Windows desktop, open your USB drive, go to the BootCamp folder, and run Setup.exe.
 
-**❓ Troubleshooting**
+##❓ Troubleshooting*
 Missing Tkinter / GUI won't open?
 MacPorts: sudo port install py312-tkinter tk +quartz
 Homebrew: brew install python-tk@3.12
