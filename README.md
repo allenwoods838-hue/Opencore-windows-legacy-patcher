@@ -4,11 +4,13 @@ Easily create a bootable Windows 10 or 11 USB installer tailored for Intel Macs 
 
 ---
 
-## ⚡ Quick Setup
+## ⚡ Quick Setup and Clone the Repository
 
 Open **Terminal** and run these commands to install requirements:
 
 ```bash
+git clone https://github.com/allenwoods838-hue/Opencore-windows-legacy-patcher.git
+cd Opencore-windows-legacy-patcher
 # 1. Install the GUI library
 pip3 install customtkinter
 ```
@@ -39,7 +41,6 @@ Select ISO: Choose your downloaded Windows 10 or 11 .iso file.
 Select USB: Pick your plugged-in USB flash drive (8 GB or larger).
 Build: Click Build Windows Installer and wait for it to complete.
 
----
 
 ## 💻 Installing Windows on Your Mac
 Partition: Open macOS Disk Utility, click Partition, and create a new partition named BOOTCAMP formatted as MS-DOS (FAT).
