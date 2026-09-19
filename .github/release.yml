@@ -1,0 +1,62 @@
+name: Build and Release OWLP
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # Use macos-13 (Intel x86_64) so the binary runs natively on target Intel Macs
+    runs-on: macos-13
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip3 install pyinstaller
+
+      - name: Compile with PyInstaller
+        run: |
+          pyinstaller --onefile --target-arch x86_64 --name "owlp" main.py
+
+      - name: Package DMG and ZIP
+        run: |
+          mkdir -p release_staging
+          cp dist/owlp release_staging/
+          
+          # Create README for the archive
+          cat << 'EOF' > release_staging/README.txt
+          OpenCore Windows Legacy Patcher (OWLP)
+          ======================================
+          How to run:
+          1. Open Terminal.
+          2. Type 'sudo ' (with the trailing space).
+          3. Drag the 'owlp' binary into Terminal and press Enter.
+          EOF
+
+          # Build ZIP
+          cd dist && zip -r ../OWLP-macOS-x86_64.zip owlp && cd ..
+
+          # Build DMG
+          hdiutil create -volname "OWLP" -srcfolder release_staging -ov -format UDZO OWLP-Installer.dmg
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            OWLP-macOS-x86_64.zip
+            OWLP-Installer.dmg
+          generate_release_notes: true
