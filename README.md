@@ -12,12 +12,15 @@ Open **Terminal** and run these commands to install requirements:
 # 1. Install the GUI library
 pip3 install customtkinter
 
+
 # 2. Install wimlib (required to handle large Windows files)
 # If using Homebrew:
 brew install wimlib
 
 # If using MacPorts:
 sudo port install wimlib tk +quartz
+
+---
 
 🚀 How to Run
 Launch the modern graphical interface:
@@ -27,11 +30,15 @@ sudo python3 gui.py
 
 (Or run sudo python3 main.py for the terminal version).
 
+---
+
 **🛠 How to Use**
 Target Model: Leave on default (Host Mac), or check "Build for another Mac" to pick an older Mac model.
 Select ISO: Choose your downloaded Windows 10 or 11 .iso file.
 Select USB: Pick your plugged-in USB flash drive (8 GB or larger).
 Build: Click Build Windows Installer and wait for it to complete.
+
+---
 
 **💻 Installing Windows on Your Mac**
 Partition: Open macOS Disk Utility, click Partition, and create a new partition named BOOTCAMP formatted as MS-DOS (FAT).
