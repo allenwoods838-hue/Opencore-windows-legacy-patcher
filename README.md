@@ -30,10 +30,8 @@ Launch the modern graphical interface:
 
 ```Bash
 sudo python3 gui.py
-
-(Or run sudo python3 main.py for the terminal version).
 ```
-
+(Or run sudo python3 main.py for the terminal version).
 
 ## 🛠 How to Use
 Target Model: Leave on default (Host Mac), or check "Build for another Mac" to pick an older Mac model.
