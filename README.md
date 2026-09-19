@@ -1,25 +1,45 @@
 # OpenCore Windows Legacy Patcher (OWLP)
 
-[![Release](https://img.shields.io/github/v/release/allenwoods838-hue/Opencore-windows-legacy-patcher?color=brightgreen)](https://github.com/allenwoods838-hue/Opencore-windows-legacy-patcher/releases/latest)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-
-An automated OpenCore-assisted Windows 10 & 11 deployment engine specifically engineered for Intel Macs (2008–2020).
+Easily create a bootable Windows 10 or 11 USB installer tailored for Intel Macs (2008–2020), complete with Apple Boot Camp drivers, Windows 11 hardware bypasses, and audio fixes.
 
 ---
 
-## Features
+## ⚡ Quick Setup
 
-- **Automated Boot Camp Driver Fetcher**: Scrapes Apple's master catalog and extracts `$WinPEDriver$` and `BootCamp` drivers matching your exact Mac Model ID.
-- **Windows 11 Hardware Bypass**: Automatically injects an `autounattend.xml` answer file bypassing TPM 2.0, Secure Boot, RAM, and CPU generation requirements.
-- **WIM Splitting**: Automatically splits `install.wim` into FAT32-compatible `.swm` chunks using `wimlib-imagex`.
-- **Cirrus Logic EFI Audio Patch**: Injects OpenCore with `SSDT-XOSI` to fix the notorious broken audio bug on 2011–2014 Macs booted via UEFI.
-- **Pure USB Target Mode**: Prepares an external installer without touching your internal drive's EFI partition.
-
----
-
-## Quick Start (Terminal One-Liner)
-
-Open Terminal on your Mac and run:
+Open **Terminal** and run these commands to install requirements:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/allenwoods838-hue/Opencore-windows-legacy-patcher/main/install.sh | bash
+# 1. Install the GUI library
+pip3 install customtkinter
+
+# 2. Install wimlib (required to handle large Windows files)
+# If using Homebrew:
+brew install wimlib
+
+# If using MacPorts:
+sudo port install wimlib tk +quartz
+
+🚀 How to Run
+Launch the modern graphical interface:
+
+```Bash
+sudo python3 gui.py
+
+(Or run sudo python3 main.py for the terminal version).
+
+**🛠 How to Use**
+Target Model: Leave on default (Host Mac), or check "Build for another Mac" to pick an older Mac model.
+Select ISO: Choose your downloaded Windows 10 or 11 .iso file.
+Select USB: Pick your plugged-in USB flash drive (8 GB or larger).
+Build: Click Build Windows Installer and wait for it to complete.
+
+**💻 Installing Windows on Your Mac**
+Partition: Open macOS Disk Utility, click Partition, and create a new partition named BOOTCAMP formatted as MS-DOS (FAT).
+Boot: Restart your Mac and immediately hold down the Option (Alt) key. Select the yellow EFI Boot icon, then choose Windows.
+Install: In Windows setup, select the BOOTCAMP partition, click Format, and proceed.
+Drivers: Once on the Windows desktop, open your USB drive, go to the BootCamp folder, and run Setup.exe.
+
+**❓ Troubleshooting**
+Missing Tkinter / GUI won't open?
+MacPorts: sudo port install py312-tkinter tk +quartz
+Homebrew: brew install python-tk@3.12
