@@ -21,4 +21,5 @@ An automated OpenCore-assisted Windows 10 & 11 deployment engine specifically en
 
 Open Terminal on your Mac and run:
 
+```bash
 curl -fsSL https://raw.githubusercontent.com/allenwoods838-hue/Opencore-windows-legacy-patcher/main/install.sh | bash
