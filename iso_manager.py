@@ -7,7 +7,10 @@ import time
 from typing import Optional, Tuple
 
 
-# Unattended answer file to bypass Windows 11 restrictions in WinPE
+# Zero-Touch Answer File:
+# 1. windowsPE pass: Bypasses TPM 2.0, Secure Boot, RAM, Storage, CPU checks.
+# 2. specialize pass: Injects BypassNRO to allow offline local account creation on Win11.
+# 3. oobeSystem pass: Automatically detects USB drive letter and launches Apple BootCamp Setup.exe on first desktop login!
 AUTOUNATTEND_XML = """<?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
     <settings pass="windowsPE">
@@ -36,6 +39,27 @@ AUTOUNATTEND_XML = """<?xml version="1.0" encoding="utf-8"?>
             </RunSynchronous>
         </component>
     </settings>
+    <settings pass="specialize">
+        <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <RunSynchronous>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>1</Order>
+                    <Path>reg add HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\OOBE /v BypassNRO /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+            </RunSynchronous>
+        </component>
+    </settings>
+    <settings pass="oobeSystem">
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <FirstLogonCommands>
+                <SynchronousCommand wcm:action="add">
+                    <Order>1</Order>
+                    <CommandLine>cmd.exe /c for %i in (C D E F G H I J K) do if exist %i:\\BootCamp\\setup.exe (start %i:\\BootCamp\\setup.exe &amp; exit)</CommandLine>
+                    <Description>Zero-Touch: Auto-Launch Apple Boot Camp Installer</Description>
+                </SynchronousCommand>
+            </FirstLogonCommands>
+        </component>
+    </settings>
 </unattend>
 """
 
@@ -60,7 +84,6 @@ class WindowsISOManager:
         """Attempts to install wimlib via Homebrew if missing."""
         brew_bin = shutil.which("brew")
         if not brew_bin:
-            # Common Homebrew installation locations
             for path in ["/usr/local/bin/brew", "/opt/homebrew/bin/brew"]:
                 if os.path.exists(path):
                     brew_bin = path
@@ -128,7 +151,7 @@ class WindowsISOManager:
         print()
 
     def process_and_copy(self) -> bool:
-        """Copies all ISO files, splits install.wim if necessary, and injects bypasses."""
+        """Copies all ISO files, splits install.wim if necessary, and injects Zero-Touch bypasses."""
         if not os.path.exists(self.target_volume):
             print(f"[!] Target volume '{self.target_volume}' does not exist.")
             return False
@@ -175,7 +198,6 @@ class WindowsISOManager:
 
                 if item.lower() == "sources":
                     os.makedirs(dst_item, exist_ok=True)
-                    # Copy all files inside sources EXCEPT install.wim/install.esd
                     for s_item in os.listdir(src_item):
                         if s_item.lower() in ["install.wim", "install.esd"]:
                             continue
@@ -210,12 +232,12 @@ class WindowsISOManager:
                 print(f"[*] Image fits within FAT32 limit. Copying {image_name} directly...")
                 self._copy_file_with_progress(main_image, os.path.join(dst_sources, image_name))
 
-            # 3. Inject autounattend.xml bypass
-            print("[*] Injecting Windows 11 TPM/SecureBoot/CPU bypass (autounattend.xml)...")
+            # 3. Inject Zero-Touch autounattend.xml
+            print("[*] Injecting Zero-Touch autounattend.xml (Win11 Bypasses + Auto-Driver Launcher)...")
             unattend_dst = os.path.join(self.target_volume, "autounattend.xml")
             with open(unattend_dst, "w", encoding="utf-8") as f:
                 f.write(AUTOUNATTEND_XML)
-            print("[+] autounattend.xml written to USB root.")
+            print("[+] Zero-Touch autounattend.xml written to USB root.")
 
             print("\n[+] Windows installation media preparation complete!")
             return True
@@ -225,22 +247,3 @@ class WindowsISOManager:
             return False
         finally:
             self.unmount_iso()
-
-
-if __name__ == "__main__":
-    print("=" * 55)
-    print("   STAGE 4: WINDOWS ISO PROCESSOR & BYPASS ENGINE")
-    print("=" * 55)
-
-    iso_input = input("Enter path to Windows ISO file: ").strip().strip("'\"")
-    if not os.path.isfile(iso_input):
-        print(f"[!] File not found: {iso_input}")
-        sys.exit(1)
-
-    vol_input = input("Enter target USB volume path [/Volumes/WININSTALL]: ").strip() or "/Volumes/WININSTALL"
-
-    manager = WindowsISOManager(iso_input, vol_input)
-    success = manager.process_and_copy()
-
-    if success:
-        print("\nStage 4 completed successfully!")

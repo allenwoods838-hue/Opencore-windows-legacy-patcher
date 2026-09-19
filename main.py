@@ -1,3 +1,6 @@
+
+
+
 #!/usr/bin/env python3
 """
 OWLP - OpenCore Windows Legacy Patcher
@@ -8,6 +11,18 @@ import os
 import sys
 import time
 import shutil
+
+if "--cli" not in sys.argv:
+    try:
+        from gui import OWLPMainWindow, QApplication
+        app = QApplication(sys.argv)
+        win = OWLPMainWindow()
+        win.show()
+        sys.exit(app.exec())
+    except ImportError:
+        pass  # Fallback to CLI if PyQt6 is not installed
+
+
 
 # Import modules from Stages 1 through 5
 from hardware import MacHardwareProfile
