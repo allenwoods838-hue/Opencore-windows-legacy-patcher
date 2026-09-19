@@ -55,6 +55,7 @@ MacPorts:
 ```bash
 sudo port install py312-tkinter tk +quartz
 ```
+Homebrew:
 ```bash
-Homebrew: brew install python-tk@3.12
+brew install python-tk@3.12
 ```
