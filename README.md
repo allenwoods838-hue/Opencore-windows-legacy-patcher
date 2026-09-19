@@ -51,5 +51,10 @@ Drivers: Once on the Windows desktop, open your USB drive, go to the BootCamp fo
 
 ## ❓ Troubleshooting
 Missing Tkinter / GUI won't open?
-MacPorts: sudo port install py312-tkinter tk +quartz
+MacPorts: 
+```bash
+sudo port install py312-tkinter tk +quartz
+```
+```bash
 Homebrew: brew install python-tk@3.12
+```
