@@ -371,15 +371,15 @@ class OWLPApp(ctk.CTk):
 
     def _run_pipeline(self, iso_path, usb_node):
         try:
-            # 1. Format USB
+            # 1. Format USB Drive
             self.set_status("Formatting USB as GPT FAT32...", 10)
             self.log(f"[*] Initializing {usb_node}...")
             if not self.disk_engine.format_usb_for_installer(usb_node, "WININSTALL"):
-                raise RuntimeError("Failed to format USB drive. Check sudo privileges.")
+                raise RuntimeError("Failed to format USB drive. Check administrator permissions.")
 
             time.sleep(2)
 
-            # 2. Deploy OpenCore with Advanced Quirks (gMux, T2, dead dGPU toggle)
+            # 2. Deploy OpenCore (STRICT: ABORT ON FAILURE)
             self.set_status(f"Injecting OpenCore for {self.profile.model_id}...", 35)
             self.log("[*] Injecting OpenCore EFI bootloader with Advanced Hardware Quirks...")
             oc = OpenCoreEngine(
@@ -387,7 +387,15 @@ class OWLPApp(ctk.CTk):
                 self.profile,
                 disable_dead_dgpu=self.dgpu_off_var.get()
             )
-            oc.deploy_opencore()
+            
+            # STRICT CHECK: Never continue if OpenCore deployment or ocvalidate fails!
+            if not oc.deploy_opencore():
+                raise RuntimeError(
+                    "OpenCore deployment or schema validation failed!\n\n"
+                    "Build aborted immediately to prevent creating an unbootable installer."
+                )
+
+            self.log("[+] OpenCore deployment and validation succeeded.")
 
             # 3. Process Windows ISO (WIM splitting + Zero-Touch autounattend.xml)
             self.set_status("Extracting Windows ISO & splitting WIM...", 65)
@@ -396,7 +404,7 @@ class OWLPApp(ctk.CTk):
             if not iso_mgr.process_and_copy():
                 raise RuntimeError("Failed to unpack Windows ISO or split install.wim.")
 
-            # 4. Download and stage Apple Boot Camp drivers
+            # 4. Download and Stage Apple Boot Camp Drivers
             self.set_status("Downloading Boot Camp drivers...", 85)
             self.log(f"[*] Searching Apple catalog for {self.profile.model_id}...")
             driver_eng = DriverEngine(self.profile.model_id)
