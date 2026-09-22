@@ -1,3 +1,8 @@
+"""
+OWLP - OpenCore Bootloader & ACPI Deployment Engine
+Configures OpenCore EFI with mandatory ocvalidate schema verification.
+"""
+
 import os
 import sys
 import json
@@ -5,7 +10,8 @@ import zipfile
 import plistlib
 import subprocess
 import shutil
-from typing import Optional, Dict, Any
+import tempfile
+from typing import Optional, Dict, Any, Tuple
 from urllib.request import urlopen, Request
 
 from hardware import MacHardwareProfile
@@ -47,6 +53,7 @@ class OpenCoreEngine:
 
     def unmount_efi_partition(self):
         if self.efi_mount_point:
+            print(f"[*] Unmounting EFI partition: {self.efi_partition_node}...")
             self._run_cmd(["diskutil", "unmount", self.efi_partition_node])
             self.efi_mount_point = None
 
@@ -55,6 +62,7 @@ class OpenCoreEngine:
         if os.path.exists(cached_zip):
             return cached_zip
 
+        print("[*] Fetching latest OpenCore release from GitHub...")
         req = Request(OPENCORE_API_URL, headers={"User-Agent": "OWLP-Bootloader/1.0"})
         with urlopen(req) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -83,16 +91,41 @@ class OpenCoreEngine:
             shutil.copyfileobj(resp, out_file)
         return target_path
 
+    def validate_config(self, ocvalidate_binary: str, config_path: str) -> Tuple[bool, str]:
+        """
+        Runs official Acidanthera ocvalidate utility against the generated config.plist.
+        Returns (True, report) if 0 errors, or (False, error_report) if invalid.
+        """
+        if not os.path.isfile(ocvalidate_binary) or not os.path.isfile(config_path):
+            return False, "Validator or config.plist missing."
+
+        # Ensure executable permissions
+        os.chmod(ocvalidate_binary, 0o755)
+
+        cmd = [ocvalidate_binary, config_path]
+        code, stdout, stderr = self._run_cmd(cmd)
+
+        output = stdout or stderr
+        if code == 0:
+            return True, output or "Completed validating config.plist. No issues found."
+        else:
+            return False, output or f"ocvalidate failed with return code {code}"
+
     def deploy_opencore(self) -> bool:
+        """
+        Extracts OpenCore binaries, applies advanced quirks,
+        and strictly enforces ocvalidate verification before finalizing.
+        """
         mount = self.mount_efi_partition()
         if not mount:
             return False
+
+        temp_validator_dir = tempfile.mkdtemp(prefix="owlp_validator_")
 
         try:
             zip_path = self.download_opencore_binaries()
             self.download_ssdt_xosi()
 
-            # Target directory structure on USB EFI
             boot_dir = os.path.join(mount, "EFI", "BOOT")
             oc_dir = os.path.join(mount, "EFI", "OC")
             drivers_dir = os.path.join(oc_dir, "Drivers")
@@ -102,17 +135,27 @@ class OpenCoreEngine:
             os.makedirs(drivers_dir, exist_ok=True)
             os.makedirs(acpi_dir, exist_ok=True)
 
+            print("[*] Extracting OpenCore binaries & ocvalidate utility...")
+            ocvalidate_path = os.path.join(temp_validator_dir, "ocvalidate")
+
             with zipfile.ZipFile(zip_path, "r") as z:
+                # 1. Extract BOOTx64.efi & OpenCore.efi
                 with z.open("X64/EFI/BOOT/BOOTx64.efi") as src, open(os.path.join(boot_dir, "BOOTx64.efi"), "wb") as dst:
                     shutil.copyfileobj(src, dst)
                 with z.open("X64/EFI/OC/OpenCore.efi") as src, open(os.path.join(oc_dir, "OpenCore.efi"), "wb") as dst:
                     shutil.copyfileobj(src, dst)
+
+                # 2. Extract Drivers
                 for drv in ["OpenRuntime.efi", "ResetNvramEntry.efi"]:
                     with z.open(f"X64/EFI/OC/Drivers/{drv}") as src, open(os.path.join(drivers_dir, drv), "wb") as dst:
                         shutil.copyfileobj(src, dst)
 
+                # 3. Extract ocvalidate tool
+                with z.open("Utilities/ocvalidate/ocvalidate") as src, open(ocvalidate_path, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+
             # --- ADVANCED QUIRKS INJECTION ---
-            print(f"[*] Applying Advanced Hardware Quirks for {self.hw.model_id}...")
+            print(f"[*] Applying Hardware Quirks for {self.hw.model_id}...")
             quirks_mgr = AdvancedQuirksEngine(self.hw, disable_dead_dgpu=self.disable_dead_dgpu)
             acpi_entries = quirks_mgr.stage_acpi_tables(acpi_dir)
 
@@ -123,16 +166,34 @@ class OpenCoreEngine:
             with open(config_path, "wb") as f:
                 plistlib.dump(final_config, f)
 
-            print("[+] OpenCore bootloader & advanced hardware quirks staged successfully!")
+            # --- MANDATORY OPENCORE VALIDATION ---
+            print("[*] Running MANDATORY OpenCore validation (ocvalidate)...")
+            is_valid, report = self.validate_config(ocvalidate_path, config_path)
+
+            if not is_valid:
+                print("\n" + "=" * 55)
+                print("  [!] CRITICAL ERROR: OPENCORE VALIDATION FAILED")
+                print("=" * 55)
+                print(report)
+                print("=" * 55 + "\n")
+                # Remove unbootable config for safety
+                if os.path.exists(config_path):
+                    os.remove(config_path)
+                return False
+
+            print("[+] OpenCore validation PASSED: 0 schema errors detected.")
+            print("[+] OpenCore bootloader successfully deployed and verified!")
             return True
 
         except Exception as e:
             print(f"[!] Error deploying OpenCore: {e}")
             return False
         finally:
+            shutil.rmtree(temp_validator_dir, ignore_errors=True)
             self.unmount_efi_partition()
 
     def _get_base_config(self) -> Dict[str, Any]:
+        """Provides the baseline OpenCore schema-compliant config."""
         return {
             "ACPI": {
                 "Add": [],
@@ -155,7 +216,14 @@ class OpenCoreEngine:
                         "TableSignature": b""
                     }
                 ],
-                "Quirks": {"FadtEnableReset": False, "NormalizeHeaders": False, "RebaseRegions": False, "ResetHwSig": False, "ResetLogoStatus": False}
+                "Quirks": {
+                    "FadtEnableReset": False,
+                    "NormalizeHeaders": False,
+                    "RebaseRegions": False,
+                    "ResetHwSig": False,
+                    "ResetLogoStatus": False,
+                    "SyncTableIds": False
+                }
             },
             "Booter": {
                 "MmioWhitelist": [],
@@ -169,6 +237,7 @@ class OpenCoreEngine:
                     "DiscardHibernateMap": False,
                     "EnableSafeModeSlide": True,
                     "EnableWriteUnprotector": True,
+                    "FixupAppleEfiImages": False,
                     "ForceBooterSignature": False,
                     "ForceExitBootServices": False,
                     "ProtectMemoryRegions": False,
@@ -187,13 +256,93 @@ class OpenCoreEngine:
             "Kernel": {"Add": [], "Block": [], "Emulate": {}, "Force": [], "Patch": [], "Quirks": {}, "Scheme": {}},
             "Misc": {
                 "BlessOverride": [],
-                "Boot": {"ConsoleAttributes": 0, "HibernateMode": "None", "HideAuxiliary": False, "LauncherOption": "Disabled", "LauncherPath": "Default", "PickerAttributes": 17, "PickerAudioAssist": False, "PickerMode": "Builtin", "PickerVariant": "Default", "PollAppleHotKeys": True, "ShowPicker": True, "TakeoffDelay": 0, "Timeout": 5},
-                "Debug": {"AppleDebug": False, "ApplePanic": False, "DisableWatchDog": True, "DisplayDelay": 0, "DisplayLevel": 2147483650, "LogModules": "*", "Target": 3},
-                "Security": {"AllowSetDefault": True, "ApECID": 0, "AuthRestart": False, "BlacklistAppleUpdate": True, "DmgLoading": "Signed", "EnablePassword": False, "ExposeSensitiveData": 6, "HaltLevel": 2147483648, "PasswordHash": b"", "PasswordSalt": b"", "ScanPolicy": 0, "SecureBootModel": "Disabled", "Vault": "Optional"},
+                "Boot": {
+                    "ConsoleAttributes": 0,
+                    "HibernateMode": "None",
+                    "HibernateSkipsPicker": False,
+                    "HideAuxiliary": False,
+                    "InstanceIdentifier": "",
+                    "LauncherOption": "Disabled",
+                    "LauncherPath": "Default",
+                    "PickerAttributes": 17,
+                    "PickerAudioAssist": False,
+                    "PickerMode": "Builtin",
+                    "PickerVariant": "Default",
+                    "PollAppleHotKeys": True,
+                    "ShowPicker": True,
+                    "TakeoffDelay": 0,
+                    "Timeout": 5
+                },
+                "Debug": {
+                    "AppleDebug": False,
+                    "ApplePanic": False,
+                    "DisableWatchDog": True,
+                    "DisplayDelay": 0,
+                    "DisplayLevel": 2147483650,
+                    "LogModules": "*",
+                    "SysReport": False,
+                    "Target": 3
+                },
+                "Security": {
+                    "AllowSetDefault": True,
+                    "ApECID": 0,
+                    "AuthRestart": False,
+                    "BlacklistAppleUpdate": True,
+                    "DmgLoading": "Signed",
+                    "EnablePassword": False,
+                    "ExposeSensitiveData": 6,
+                    "HaltLevel": 2147483648,
+                    "PasswordHash": b"",
+                    "PasswordSalt": b"",
+                    "ScanPolicy": 0,
+                    "SecureBootModel": "Disabled",
+                    "Vault": "Optional"
+                },
+                "Serial": {
+                    "Custom": {
+                        "BaudRate": 115200,
+                        "ClockRate": 1843200,
+                        "DetectCable": False,
+                        "ExtendedTxFifoSize": 64,
+                        "FifoControl": 7,
+                        "LineControl": 7,
+                        "PciDeviceInfo": bytes.fromhex("ffff"),
+                        "RegisterAccessWidth": 1,
+                        "RegisterBase": 0,
+                        "RegisterStride": 1,
+                        "UseHardwareFlowControl": False,
+                        "UseMmio": False
+                    },
+                    "Init": False,
+                    "Override": False
+                },
                 "Tools": []
             },
-            "NVRAM": {"Add": {"7C436110-AB2A-4BBB-A880-FE41995C9F82": {"boot-args": "-v"}}, "Delete": {}, "LegacyOverwrite": False, "WriteFlash": True},
-            "PlatformInfo": {"Automatic": True, "CustomMemory": False, "Generic": {"AdviseFeatures": True, "MaxBIOSVersion": False, "ProcessorType": 0, "SpoofVendor": True, "SystemMemoryStatus": "Auto"}, "UpdateDataHub": True, "UpdateNVRAM": True, "UpdateSMBIOS": True, "UpdateSMBIOSMode": "Create"},
+            "NVRAM": {
+                "Add": {
+                    "7C436110-AB2A-4BBB-A880-FE41995C9F82": {
+                        "boot-args": "-v"
+                    }
+                },
+                "Delete": {},
+                "LegacyOverwrite": False,
+                "WriteFlash": True
+            },
+            "PlatformInfo": {
+                "Automatic": True,
+                "CustomMemory": False,
+                "Generic": {
+                    "AdviseFeatures": True,
+                    "MaxBIOSVersion": False,
+                    "ProcessorType": 0,
+                    "SpoofVendor": True,
+                    "SystemMemoryStatus": "Auto"
+                },
+                "UpdateDataHub": True,
+                "UpdateNVRAM": True,
+                "UpdateSMBIOS": True,
+                "UpdateSMBIOSMode": "Create"
+            },
             "UEFI": {
                 "APFS": {"EnableJumpstart": False, "GlobalConnect": False, "HideVerbose": False, "JumpstartHotPlug": False, "MinDate": 0, "MinVersion": 0},
                 "AppleInput": {"AppleEvent": "Builtin", "CustomDelays": False, "KeyInitialDelay": 50, "KeySubsequentDelay": 5},
@@ -203,85 +352,28 @@ class OpenCoreEngine:
                     {"Arguments": "", "Comment": "ResetNVRAM", "Enabled": True, "LoadEarly": False, "Path": "ResetNvramEntry.efi"}
                 ],
                 "Input": {"KeyFiltering": False, "KeyForgetThreshold": 5, "KeySupport": True, "KeySupportMode": "Auto"},
-                "Output": {"ClearScreenOnModeSwitch": False, "ConsoleFont": "", "ConsoleMode": "", "DirectGopCacheMode": "", "GopBurstMode": False, "GopPassThrough": "Disabled", "IgnoreTextInGraphics": False, "InitialMode": "Auto", "ProvideConsoleGop": True, "ReconnectGraphicsOnConnect": False, "ReconnectOnResChange": False, "ReplaceTabWithSpace": False, "Resolution": "Max", "SanitiseClearScreen": False, "TextRenderer": "BuiltinGraphics", "UIScale": 0, "UgaPassThrough": False},
+                "Output": {
+                    "ClearScreenOnModeSwitch": False,
+                    "ConsoleFont": "",
+                    "ConsoleMode": "",
+                    "DirectGopCacheMode": "",
+                    "GopBurstMode": False,
+                    "GopPassThrough": "Disabled",
+                    "IgnoreTextInGraphics": False,
+                    "InitialMode": "Auto",
+                    "ProvideConsoleGop": True,
+                    "ReconnectGraphicsOnConnect": False,
+                    "ReconnectOnResChange": False,
+                    "ReplaceTabWithSpace": False,
+                    "Resolution": "Max",
+                    "SanitiseClearScreen": False,
+                    "TextRenderer": "BuiltinGraphics",
+                    "UIScale": 0,
+                    "UgaPassThrough": False
+                },
                 "ProtocolOverrides": {"AppleAudio": False, "AppleBootPolicy": False, "AppleDebugLog": False, "AppleEg2Info": False, "AppleFramebufferInfo": False, "AppleImageConversion": False, "AppleImg4Verification": False, "AppleKeyMap": False, "AppleRtcRam": False, "AppleSecureBoot": False, "AppleSmcIo": False, "AppleUserInterfaceTheme": False, "DataHub": False, "DeviceProperties": False, "FirmwareVolume": False, "HashServices": False, "OSInfo": False, "PciIo": False, "UnicodeCollation": False},
                 "Quirks": {"ActivateHpetSupport": False, "DisableSecurityPolicy": False, "EnableVectorAcceleration": True, "EnableVmx": False, "ExitBootServicesDelay": 0, "ForceOcWriteFlash": False, "ForgeUefiSupport": False, "IgnoreInvalidFlexRatio": False, "ReleaseUsbOwnership": True, "ReloadOptionRoms": False, "RequestBootVarRouting": True, "ResizeGpuBars": -1, "TscSyncTimeout": 0, "UnblockFsConnect": False},
-                "ReservedMemory": []
+                "ReservedMemory": [],
+                "Unload": []
             }
         }
-        return config
-
-    def deploy_opencore(self) -> bool:
-        """Extracts required OpenCore binaries and installs them onto the USB's EFI partition."""
-        mount = self.mount_efi_partition()
-        if not mount:
-            return False
-
-        try:
-            zip_path = self.download_opencore_binaries()
-            ssdt_xosi_path = self.download_ssdt_xosi()
-
-            print("[*] Extracting OpenCore EFI files...")
-            with zipfile.ZipFile(zip_path, "r") as z:
-                # 1. Target Directory Paths on EFI
-                boot_dir = os.path.join(mount, "EFI", "BOOT")
-                oc_dir = os.path.join(mount, "EFI", "OC")
-                drivers_dir = os.path.join(oc_dir, "Drivers")
-                acpi_dir = os.path.join(oc_dir, "ACPI")
-
-                os.makedirs(boot_dir, exist_ok=True)
-                os.makedirs(drivers_dir, exist_ok=True)
-                os.makedirs(acpi_dir, exist_ok=True)
-
-                # 2. Extract BOOTx64.efi
-                with z.open("X64/EFI/BOOT/BOOTx64.efi") as src, open(os.path.join(boot_dir, "BOOTx64.efi"), "wb") as dst:
-                    shutil.copyfileobj(src, dst)
-
-                # 3. Extract OpenCore.efi
-                with z.open("X64/EFI/OC/OpenCore.efi") as src, open(os.path.join(oc_dir, "OpenCore.efi"), "wb") as dst:
-                    shutil.copyfileobj(src, dst)
-
-                # 4. Extract Drivers
-                for drv in ["OpenRuntime.efi", "ResetNvramEntry.efi"]:
-                    with z.open(f"X64/EFI/OC/Drivers/{drv}") as src, open(os.path.join(drivers_dir, drv), "wb") as dst:
-                        shutil.copyfileobj(src, dst)
-
-            # 5. Copy SSDT-XOSI
-            shutil.copy2(ssdt_xosi_path, os.path.join(acpi_dir, "SSDT-XOSI.aml"))
-
-            # 6. Generate and save config.plist
-            print("[*] Generating tailored OpenCore config.plist...")
-            needs_audio_quirk = any("Audio" in q for q in self.hw.evaluate_windows_support().get("quirks_needed", []))
-            config = self.generate_config_plist(needs_audio_patch=needs_audio_quirk)
-
-            config_path = os.path.join(oc_dir, "config.plist")
-            with open(config_path, "wb") as f:
-                plistlib.dump(config, f)
-
-            print("[+] OpenCore EFI bootloader successfully configured!")
-            return True
-
-        except Exception as e:
-            print(f"[!] Error deploying OpenCore: {e}")
-            return False
-        finally:
-            self.unmount_efi_partition()
-
-
-if __name__ == "__main__":
-    profile = MacHardwareProfile()
-    print("=" * 55)
-    print("   STAGE 5: BOOTLOADER & ACPI PATCHING ENGINE")
-    print("=" * 55)
-    print(f"Target Mac Model: {profile.model_id}")
-
-    disk_input = input("Enter target USB identifier (e.g., 'disk2'): ").strip()
-    if not disk_input:
-        print("[!] Disk identifier cannot be empty.")
-        sys.exit(1)
-
-    engine = OpenCoreEngine(disk_input, profile)
-    success = engine.deploy_opencore()
-
-    if success:
-        print("\n[+] Stage 5 completed successfully!")
