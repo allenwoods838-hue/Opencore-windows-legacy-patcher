@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 OWLP - OpenCore Windows Legacy Patcher
-Full Graphical User Interface (CustomTkinter Engine)
+Full Graphical User Interface (CustomTkinter Engine - Hardened Defensive Edition)
 """
 
 import os
@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox
 # Import Stage 1-7 engines
 from hardware import MacHardwareProfile
 from mac_database import get_all_models
-from disk_manager import DiskEngine
+from disk_manager import DiskEngine, USBDisk
 from driver_manager import DriverEngine
 from iso_manager import WindowsISOManager
 from opencore_engine import OpenCoreEngine
@@ -176,18 +176,18 @@ class OWLPApp(ctk.CTk):
         btn_browse.pack(side="right")
 
         # -------------------------------------------------------------
-        # 4. Target USB Flash Drive
+        # 4. Target USB Flash Drive (Defensive Engine)
         # -------------------------------------------------------------
         drv_card = ctk.CTkFrame(self.main_frame, corner_radius=10)
         drv_card.pack(fill="x", pady=5)
 
-        drv_title = ctk.CTkLabel(drv_card, text="Target USB Flash Drive", font=ctk.CTkFont(size=13, weight="bold"))
+        drv_title = ctk.CTkLabel(drv_card, text="Target USB Flash Drive (Defensive Guard Active)", font=ctk.CTkFont(size=13, weight="bold"))
         drv_title.pack(anchor="w", padx=14, pady=(10, 4))
 
         drv_row = ctk.CTkFrame(drv_card, fg_color="transparent")
         drv_row.pack(fill="x", padx=14, pady=(0, 12))
 
-        self.drv_combo = ctk.CTkComboBox(drv_row, values=["Scanning drives..."], state="readonly")
+        self.drv_combo = ctk.CTkComboBox(drv_row, values=["Scanning safe USB drives..."], state="readonly")
         self.drv_combo.pack(side="left", fill="x", expand=True, padx=(0, 10))
 
         btn_refresh = ctk.CTkButton(drv_row, text="Refresh", width=100, command=self.refresh_drives)
@@ -254,19 +254,22 @@ class OWLPApp(ctk.CTk):
     def check_internal_apfs(self):
         info = self.disk_engine.get_internal_apfs_info()
         if not info:
-            self.lbl_apfs_info.configure(text="No APFS container detected or unsupported drive layout.")
+            self.lbl_apfs_info.configure(text="No APFS container detected or unsupported layout.")
             self.btn_partition.configure(state="disabled")
             return
 
-        if info["has_bootcamp"]:
-            self.lbl_apfs_info.configure(text="A 'BOOTCAMP' partition is already present on this Mac.")
+        if not info["is_safe_to_partition"]:
+            reason_text = "Blocked: " + " | ".join(info["blocking_reasons"])
+            self.lbl_apfs_info.configure(text=reason_text, text_color="#FF3B30")
             self.btn_partition.configure(state="disabled")
         else:
-            self.lbl_apfs_info.configure(
-                text=f"Container: {info['container_id']} (Total: {info['current_gb']} GB) | Safe to allocate: Up to {info['allocatable_gb']} GB"
+            status_text = (
+                f"Container: {info['container_id']} (Total: {info['current_gb']} GB) | "
+                f"Safe to Allocate: Up to {info['allocatable_gb']} GB (Buffer: {info['safe_buffer_gb']} GB reserved)"
             )
+            self.lbl_apfs_info.configure(text=status_text, text_color="#34C759")
             self.btn_partition.configure(state="normal")
-
+            
     def start_apfs_partition(self):
         try:
             size_gb = int(self.apfs_size_entry.get().strip())
@@ -320,13 +323,17 @@ class OWLPApp(ctk.CTk):
             self.iso_entry.insert(0, path)
 
     def refresh_drives(self):
+        """Scans for safe USB drives and formats them with defensive labels."""
         self.drives = self.disk_engine.list_external_usb_drives()
         if not self.drives:
-            self.drv_combo.configure(values=["No eligible USB drives found (>= 8GB)"])
-            self.drv_combo.set("No eligible USB drives found (>= 8GB)")
+            self.drv_combo.configure(values=["No eligible safe USB drives found (>= 8GB)"])
+            self.drv_combo.set("No eligible safe USB drives found (>= 8GB)")
             self.btn_build.configure(state="disabled")
         else:
-            vals = [f"{d.device_node} - {d.media_name} ({d.size_gb} GB)" for d in self.drives]
+            vals = []
+            for d in self.drives:
+                tag = " [⚠️ LARGE DRIVE]" if d.is_large_storage else ""
+                vals.append(f"{d.device_node} - {d.media_name} ({d.size_gb} GB){tag}")
             self.drv_combo.configure(values=vals)
             self.drv_combo.set(vals[0])
             self.btn_build.configure(state="normal")
@@ -346,19 +353,30 @@ class OWLPApp(ctk.CTk):
             return
 
         selected_str = self.drv_combo.get()
-        target_disk = None
+        target_disk_obj = None
         for d in self.drives:
             if d.device_node in selected_str:
-                target_disk = d.device_node
+                target_disk_obj = d
                 break
 
-        if not target_disk:
+        if not target_disk_obj:
             messagebox.showerror("Error", "Please select a valid target USB drive.")
             return
 
+        # Defensive Warning for Large External Storage Devices (> 128 GB)
+        extra_warning = ""
+        if target_disk_obj.is_large_storage:
+            extra_warning = (
+                "\n\n⚠️ CAUTION: This drive is over 128 GB!\n"
+                "Verify that this is NOT your personal backup or external media drive."
+            )
+
         confirm = messagebox.askyesno(
             "Confirm Erase",
-            f"WARNING: ALL DATA ON {target_disk} WILL BE ERASED!\n\nTarget Model: {self.profile.model_id}\n\nProceed?"
+            f"WARNING: ALL DATA ON {target_disk_obj.device_node} ({target_disk_obj.media_name}) WILL BE ERASED!"
+            f"{extra_warning}\n\n"
+            f"Target Model: {self.profile.friendly_name} [{self.profile.model_id}]\n\n"
+            "Do you want to proceed?"
         )
         if not confirm:
             return
@@ -367,19 +385,28 @@ class OWLPApp(ctk.CTk):
         self.btn_partition.configure(state="disabled")
         self.txt_log.delete("1.0", "end")
 
-        threading.Thread(target=self._run_pipeline, args=(iso, target_disk), daemon=True).start()
+        # Pass target_disk_obj into background pipeline for fingerprint verification
+        threading.Thread(target=self._run_pipeline, args=(iso, target_disk_obj), daemon=True).start()
 
-    def _run_pipeline(self, iso_path, usb_node):
+    def _run_pipeline(self, iso_path, target_disk_obj):
         try:
-            # 1. Format USB Drive
+            usb_node = target_disk_obj.device_node
+            fingerprint = target_disk_obj.identity_fingerprint
+
+            # -------------------------------------------------------------
+            # 1. Format USB Drive with Pre-Flight Hardware Verification
+            # -------------------------------------------------------------
             self.set_status("Formatting USB as GPT FAT32...", 10)
-            self.log(f"[*] Initializing {usb_node}...")
-            if not self.disk_engine.format_usb_for_installer(usb_node, "WININSTALL"):
-                raise RuntimeError("Failed to format USB drive. Check administrator permissions.")
+            self.log(f"[*] Verifying hardware identity for {usb_node}...")
+
+            if not self.disk_engine.format_usb_for_installer(usb_node, "WININSTALL", expected_fingerprint=fingerprint):
+                raise RuntimeError("Defensive check aborted formatting. Hardware identity mismatch or unsafe drive.")
 
             time.sleep(2)
 
+            # -------------------------------------------------------------
             # 2. Deploy OpenCore (STRICT: ABORT ON FAILURE)
+            # -------------------------------------------------------------
             self.set_status(f"Injecting OpenCore for {self.profile.model_id}...", 35)
             self.log("[*] Injecting OpenCore EFI bootloader with Advanced Hardware Quirks...")
             oc = OpenCoreEngine(
@@ -387,24 +414,28 @@ class OWLPApp(ctk.CTk):
                 self.profile,
                 disable_dead_dgpu=self.dgpu_off_var.get()
             )
-            
+
             # STRICT CHECK: Never continue if OpenCore deployment or ocvalidate fails!
             if not oc.deploy_opencore():
                 raise RuntimeError(
-                    "OpenCore deployment or schema validation failed!\n\n"
+                    "OpenCore deployment or schema validation (ocvalidate) failed!\n\n"
                     "Build aborted immediately to prevent creating an unbootable installer."
                 )
 
             self.log("[+] OpenCore deployment and validation succeeded.")
 
+            # -------------------------------------------------------------
             # 3. Process Windows ISO (WIM splitting + Zero-Touch autounattend.xml)
+            # -------------------------------------------------------------
             self.set_status("Extracting Windows ISO & splitting WIM...", 65)
             mount = self.disk_engine.find_partition_mount("WININSTALL") or "/Volumes/WININSTALL"
             iso_mgr = WindowsISOManager(iso_path, mount)
             if not iso_mgr.process_and_copy():
                 raise RuntimeError("Failed to unpack Windows ISO or split install.wim.")
 
+            # -------------------------------------------------------------
             # 4. Download and Stage Apple Boot Camp Drivers
+            # -------------------------------------------------------------
             self.set_status("Downloading Boot Camp drivers...", 85)
             self.log(f"[*] Searching Apple catalog for {self.profile.model_id}...")
             driver_eng = DriverEngine(self.profile.model_id)
@@ -412,6 +443,8 @@ class OWLPApp(ctk.CTk):
             if pkg:
                 driver_eng.download_and_extract(pkg["package_url"], mount)
                 self.log("[+] Boot Camp drivers staged successfully.")
+            else:
+                self.log("[!] No direct Boot Camp ESD package found in catalog.")
 
             self.set_status("Complete! Media Ready.", 100)
             self.log("[+] Windows USB Installer creation complete!")

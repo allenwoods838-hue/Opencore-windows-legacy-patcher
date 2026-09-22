@@ -1,15 +1,27 @@
 #!/usr/bin/env python3
 """
 OWLP - OpenCore Windows Legacy Patcher
-Master CLI Orchestrator & Deployment Engine
+Master Unified Application Entry Point (GUI & CLI Dual Architecture)
+
+Usage:
+  sudo python3 main.py          # Launches the CustomTkinter GUI by default
+  sudo python3 main.py --cli    # Forces Terminal / CLI Wizard mode
+  sudo python3 main.py --gui    # Forces GUI mode (aborts if dependencies missing)
 """
 
 import os
 import sys
 import time
 import shutil
+import argparse
 
-# Import Stage 1-7 engines
+# Pre-flight environment: auto-locate MacPorts Tcl/Tk paths before any UI imports
+if os.path.exists("/opt/local/lib/tcl8.6"):
+    os.environ["TCL_LIBRARY"] = "/opt/local/lib/tcl8.6"
+if os.path.exists("/opt/local/lib/tk8.6"):
+    os.environ["TK_LIBRARY"] = "/opt/local/lib/tk8.6"
+
+# Core stage engines
 from hardware import MacHardwareProfile
 from mac_database import get_all_models, lookup_model
 from disk_manager import DiskEngine, USBDisk
@@ -57,19 +69,20 @@ def prompt_iso_path() -> str:
 
 
 def select_usb_drive(engine: DiskEngine) -> USBDisk:
-    """Scans and prompts the user to select an external USB flash drive."""
-    print(f"\n{ANSI.BOLD}[*] Scanning for connected external USB flash drives (>= 8GB)...{ANSI.RESET}")
+    """Scans and prompts the user to select an external USB flash drive (Defensive Mode)."""
+    print(f"\n{ANSI.BOLD}[*] Scanning for safe external USB flash drives (Defensive Mode)...{ANSI.RESET}")
     drives = engine.list_external_usb_drives()
 
     if not drives:
-        print(f"{ANSI.RED}[!] No eligible USB drives found.{ANSI.RESET}")
-        print("    Plug in an external USB flash drive (8 GB or larger) and press Enter to re-scan.")
+        print(f"{ANSI.RED}[!] No eligible safe USB drives found (>= 8GB).{ANSI.RESET}")
+        print("    Plug in an external USB flash drive and press Enter to re-scan.")
         input()
         return select_usb_drive(engine)
 
-    print(f"\n{ANSI.GREEN}Detected USB Drive(s):{ANSI.RESET}")
+    print(f"\n{ANSI.GREEN}Verified Safe USB Drive(s):{ANSI.RESET}")
     for idx, d in enumerate(drives):
-        print(f"  [{idx + 1}] {d.device_node} - {d.media_name} ({d.size_gb} GB)")
+        tag = f" {ANSI.YELLOW}[⚠️ LARGE DRIVE > 128GB]{ANSI.RESET}" if d.is_large_storage else ""
+        print(f"  [{idx + 1}] {d.device_node} - {d.media_name} ({d.size_gb} GB){tag}")
 
     while True:
         choice = input(f"\nSelect target drive number (1-{len(drives)}) or 'q' to quit: ").strip()
@@ -80,6 +93,12 @@ def select_usb_drive(engine: DiskEngine) -> USBDisk:
             sel = int(choice) - 1
             if 0 <= sel < len(drives):
                 selected_drive = drives[sel]
+
+                # Double warning for large external drives (> 128 GB)
+                if selected_drive.is_large_storage:
+                    print(f"\n{ANSI.YELLOW}{ANSI.BOLD}⚠️ CAUTION: {selected_drive.device_node} is larger than 128 GB!{ANSI.RESET}")
+                    print("Please verify this is NOT your personal backup or media drive.")
+
                 print(f"\n{ANSI.RED}{ANSI.BOLD}!!! WARNING: ALL DATA ON {selected_drive.device_node} ({selected_drive.media_name}) WILL BE ERASED !!!{ANSI.RESET}")
                 confirm = input(f"Type '{ANSI.BOLD}YES{ANSI.RESET}' to confirm erase: ").strip()
                 if confirm == "YES":
@@ -94,9 +113,9 @@ def select_usb_drive(engine: DiskEngine) -> USBDisk:
 def setup_target_hardware() -> tuple[MacHardwareProfile, bool]:
     """Handles Target Model Spoofing and dead dGPU toggle."""
     host_profile = MacHardwareProfile()
-    
+
     print(f"\n{ANSI.CYAN}{ANSI.BOLD}--- [Step 1/6] Hardware Profile & Target Selection ---{ANSI.RESET}")
-    
+
     # Handle Apple Silicon host
     if host_profile.is_apple_silicon:
         print(f"{ANSI.YELLOW}[*] Apple Silicon Mac detected. You must select an Intel target model.{ANSI.RESET}")
@@ -160,7 +179,7 @@ def setup_internal_apfs(disk_engine: DiskEngine):
     """Optional interactive internal APFS auto-partitioning."""
     print(f"\n{ANSI.CYAN}{ANSI.BOLD}--- [Step 2/6] Internal Drive Auto-Partitioning (Optional) ---{ANSI.RESET}")
     info = disk_engine.get_internal_apfs_info()
-    
+
     if not info:
         print("[*] No internal APFS container detected or unsupported drive scheme. Skipping.")
         return
@@ -175,7 +194,7 @@ def setup_internal_apfs(disk_engine: DiskEngine):
     opt = input("\nWould you like OWLP to partition your internal SSD for Windows right now? [y/N]: ").strip().lower()
     if opt == "y":
         while True:
-            size_input = input(f"Enter size in GB for BOOTCAMP [64]: ").strip() or "64"
+            size_input = input("Enter size in GB for BOOTCAMP [64]: ").strip() or "64"
             try:
                 size_gb = int(size_input)
                 print(f"[*] Resizing internal container to create {size_gb} GB BOOTCAMP partition...")
@@ -189,7 +208,8 @@ def setup_internal_apfs(disk_engine: DiskEngine):
                 print("[!] Please enter a valid whole number.")
 
 
-def main():
+def run_cli_wizard():
+    """Executes the full terminal-based deployment wizard."""
     print_banner()
     check_privileges()
 
@@ -205,11 +225,15 @@ def main():
     iso_path = prompt_iso_path()
     target_usb = select_usb_drive(disk_engine)
 
-    # 4. Partition USB & Deploy OpenCore with Strict Abort
+    # 4. Format USB & Deploy OpenCore with Strict Abort
     print(f"\n{ANSI.CYAN}{ANSI.BOLD}--- [Step 4/6] Formatting USB & Deploying OpenCore ---{ANSI.RESET}")
-    format_success = disk_engine.format_usb_for_installer(target_usb.device_node, volume_label="WININSTALL")
+    format_success = disk_engine.format_usb_for_installer(
+        target_usb.device_node,
+        volume_label="WININSTALL",
+        expected_fingerprint=target_usb.identity_fingerprint
+    )
     if not format_success:
-        print(f"{ANSI.RED}[!] USB formatting failed. Aborting.{ANSI.RESET}")
+        print(f"{ANSI.RED}[!] Defensive safety abort: USB formatting halted.{ANSI.RESET}")
         sys.exit(1)
 
     time.sleep(2)
@@ -257,9 +281,7 @@ def main():
     else:
         print(f"{ANSI.YELLOW}[!] No direct Boot Camp ESD package found in Apple catalogs.{ANSI.RESET}")
 
-    # -------------------------------------------------------------
-    # COMPLETE: Instructions for Booting
-    # -------------------------------------------------------------
+    # Final Instructions
     print(f"\n{ANSI.GREEN}{ANSI.BOLD}======================================================{ANSI.RESET}")
     print(f"{ANSI.GREEN}{ANSI.BOLD}   CONGRATULATIONS! INSTALLER DRIVE IS READY!        {ANSI.RESET}")
     print(f"{ANSI.GREEN}{ANSI.BOLD}======================================================{ANSI.RESET}")
@@ -282,6 +304,48 @@ def main():
    - The moment you reach the Windows desktop, the {ANSI.CYAN}Apple Boot Camp installer will pop up automatically{ANSI.RESET}!
    - Click {ANSI.CYAN}Next -> Install -> Restart{ANSI.RESET} to finish setup.
 """)
+
+
+def try_launch_gui() -> bool:
+    """Attempts to launch the CustomTkinter GUI."""
+    try:
+        from gui import OWLPApp
+        app = OWLPApp()
+        app.mainloop()
+        return True
+    except ImportError as e:
+        print(f"{ANSI.YELLOW}[!] GUI dependency missing: {e}{ANSI.RESET}")
+        print(f"{ANSI.YELLOW}    Falling back to Terminal Wizard (CLI mode)...{ANSI.RESET}\n")
+        return False
+    except Exception as e:
+        print(f"{ANSI.YELLOW}[!] Graphical window server unavailable or error starting GUI: {e}{ANSI.RESET}")
+        print(f"{ANSI.YELLOW}    Falling back to Terminal Wizard (CLI mode)...{ANSI.RESET}\n")
+        return False
+
+
+def main():
+    parser = argparse.ArgumentParser(description="OpenCore Windows Legacy Patcher (OWLP)")
+    parser.add_argument("--cli", "-c", action="store_true", help="Force Terminal / CLI wizard mode")
+    parser.add_argument("--gui", "-g", action="store_true", help="Force Graphical User Interface mode")
+
+    args, _ = parser.parse_known_args()
+
+    # 1. If user explicitly requested CLI mode
+    if args.cli:
+        run_cli_wizard()
+        return
+
+    # 2. If user explicitly requested GUI mode
+    if args.gui:
+        if not try_launch_gui():
+            print(f"{ANSI.RED}[!] Could not start GUI. Install customtkinter: pip3 install customtkinter{ANSI.RESET}")
+            sys.exit(1)
+        return
+
+    # 3. Default behavior: Attempt to launch GUI; fall back to CLI if unavailable
+    gui_started = try_launch_gui()
+    if not gui_started:
+        run_cli_wizard()
 
 
 if __name__ == "__main__":
