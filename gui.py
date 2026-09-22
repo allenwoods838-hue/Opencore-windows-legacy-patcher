@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 OWLP - OpenCore Windows Legacy Patcher
-Full Graphical User Interface (CustomTkinter Engine - Hardened Defensive Edition)
+Full Graphical User Interface (CustomTkinter Engine - Hardened & Deterministic)
 """
 
 import os
@@ -9,7 +9,7 @@ import sys
 import time
 import threading
 
-# Auto-locate MacPorts Tcl/Tk libraries if present
+# Pre-flight: Auto-locate MacPorts Tcl/Tk libraries if present
 if os.path.exists("/opt/local/lib/tcl8.6"):
     os.environ["TCL_LIBRARY"] = "/opt/local/lib/tcl8.6"
 if os.path.exists("/opt/local/lib/tk8.6"):
@@ -26,8 +26,7 @@ from driver_manager import DriverEngine
 from iso_manager import WindowsISOManager
 from opencore_engine import OpenCoreEngine
 
-# Set Theme & Appearance
-ctk.set_appearance_mode("System")  # Automatically matches macOS Dark/Light mode
+ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
 
@@ -36,8 +35,8 @@ class OWLPApp(ctk.CTk):
         super().__init__()
 
         self.title("OpenCore Windows Legacy Patcher (OWLP)")
-        self.geometry("780x890")
-        self.minsize(740, 780)
+        self.geometry("780x920")
+        self.minsize(740, 800)
 
         self.profile = MacHardwareProfile()
         self.disk_engine = DiskEngine()
@@ -49,7 +48,6 @@ class OWLPApp(ctk.CTk):
         self.check_internal_apfs()
 
     def setup_ui(self):
-        # Scrollable master container to fit all screens cleanly
         self.main_frame = ctk.CTkScrollableFrame(self, corner_radius=12, fg_color="transparent")
         self.main_frame.pack(fill="both", expand=True, padx=20, pady=16)
 
@@ -88,7 +86,6 @@ class OWLPApp(ctk.CTk):
         )
         self.spoof_chk.pack(side="left")
 
-        # Models Dropdown
         self.models_list = get_all_models()
         self.model_names = [f"{name} [{m_id}]" for m_id, name in self.models_list]
         self.model_combo = ctk.CTkComboBox(
@@ -126,7 +123,7 @@ class OWLPApp(ctk.CTk):
         self.dgpu_off_chk.pack(anchor="w", padx=14, pady=(0, 10))
 
         # -------------------------------------------------------------
-        # 2. Internal APFS Auto-Partitioning
+        # 2. Internal APFS Auto-Partitioning (Redesigned Safety Engine)
         # -------------------------------------------------------------
         self.apfs_card = ctk.CTkFrame(self.main_frame, corner_radius=10)
         self.apfs_card.pack(fill="x", pady=5)
@@ -134,7 +131,7 @@ class OWLPApp(ctk.CTk):
         apfs_title = ctk.CTkLabel(self.apfs_card, text="Internal Drive Setup (Create BOOTCAMP Partition)", font=ctk.CTkFont(size=13, weight="bold"))
         apfs_title.pack(anchor="w", padx=14, pady=(10, 4))
 
-        self.lbl_apfs_info = ctk.CTkLabel(self.apfs_card, text="Scanning internal drive layout...", font=ctk.CTkFont(size=12))
+        self.lbl_apfs_info = ctk.CTkLabel(self.apfs_card, text="Auditing internal APFS storage safety...", font=ctk.CTkFont(size=12))
         self.lbl_apfs_info.pack(anchor="w", padx=14, pady=(0, 6))
 
         apfs_row = ctk.CTkFrame(self.apfs_card, fg_color="transparent")
@@ -158,7 +155,7 @@ class OWLPApp(ctk.CTk):
         self.btn_partition.pack(side="left")
 
         # -------------------------------------------------------------
-        # 3. Windows ISO Selection
+        # 3. Windows ISO Selection & Dynamic Patch Controls
         # -------------------------------------------------------------
         iso_card = ctk.CTkFrame(self.main_frame, corner_radius=10)
         iso_card.pack(fill="x", pady=5)
@@ -167,7 +164,7 @@ class OWLPApp(ctk.CTk):
         iso_title.pack(anchor="w", padx=14, pady=(10, 4))
 
         iso_row = ctk.CTkFrame(iso_card, fg_color="transparent")
-        iso_row.pack(fill="x", padx=14, pady=(0, 12))
+        iso_row.pack(fill="x", padx=14, pady=(0, 6))
 
         self.iso_entry = ctk.CTkEntry(iso_row, placeholder_text="Select path to Windows ISO file...")
         self.iso_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
@@ -175,8 +172,35 @@ class OWLPApp(ctk.CTk):
         btn_browse = ctk.CTkButton(iso_row, text="Browse...", width=100, command=self.browse_iso)
         btn_browse.pack(side="right")
 
+        # ISO Detection Feedback Label
+        self.lbl_iso_detected = ctk.CTkLabel(iso_card, text="No ISO selected yet.", font=ctk.CTkFont(size=11), text_color="gray")
+        self.lbl_iso_detected.pack(anchor="w", padx=14, pady=(0, 6))
+
+        # Dynamic Patch Toggles (No Hard-Coding)
+        toggles_layout = ctk.CTkFrame(iso_card, fg_color="transparent")
+        toggles_layout.pack(fill="x", padx=14, pady=(0, 10))
+
+        self.win11_bypass_var = ctk.BooleanVar(value=False)
+        self.win11_bypass_chk = ctk.CTkCheckBox(
+            toggles_layout,
+            text="Apply Windows 11 Hardware Bypass (TPM 2.0 / Secure Boot / CPU)",
+            variable=self.win11_bypass_var,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#007AFF"
+        )
+        self.win11_bypass_chk.pack(anchor="w", pady=(2, 4))
+
+        self.auto_drivers_var = ctk.BooleanVar(value=True)
+        self.auto_drivers_chk = ctk.CTkCheckBox(
+            toggles_layout,
+            text="Zero-Touch: Automatically launch Apple Boot Camp installer on first login",
+            variable=self.auto_drivers_var,
+            font=ctk.CTkFont(size=11)
+        )
+        self.auto_drivers_chk.pack(anchor="w", pady=(0, 2))
+
         # -------------------------------------------------------------
-        # 4. Target USB Flash Drive (Defensive Engine)
+        # 4. Target USB Flash Drive (7-Layer Defensive Scanner)
         # -------------------------------------------------------------
         drv_card = ctk.CTkFrame(self.main_frame, corner_radius=10)
         drv_card.pack(fill="x", pady=5)
@@ -215,7 +239,7 @@ class OWLPApp(ctk.CTk):
         log_title = ctk.CTkLabel(log_card, text="Console Output", font=ctk.CTkFont(size=12, weight="bold"))
         log_title.pack(anchor="w", padx=14, pady=(6, 2))
 
-        self.txt_log = ctk.CTkTextbox(log_card, font=ctk.CTkFont(family="Menlo", size=11), text_color="#4af626", fg_color="#121212", height=100)
+        self.txt_log = ctk.CTkTextbox(log_card, font=ctk.CTkFont(family="Menlo", size=11), text_color="#4af626", fg_color="#121212", height=95)
         self.txt_log.pack(fill="both", expand=True, padx=14, pady=(0, 10))
 
         # -------------------------------------------------------------
@@ -244,7 +268,6 @@ class OWLPApp(ctk.CTk):
         else:
             self.lbl_quirks.configure(text="Applied Patches: Standard UEFI (No ACPI Audio Patches Needed)")
 
-        # Show/hide dGPU disable option for 2011/2012 models
         if any(x in self.profile.model_id for x in ["MacBookPro8,2", "MacBookPro9,1"]):
             self.dgpu_off_chk.configure(state="normal")
         else:
@@ -254,22 +277,21 @@ class OWLPApp(ctk.CTk):
     def check_internal_apfs(self):
         info = self.disk_engine.get_internal_apfs_info()
         if not info:
-            self.lbl_apfs_info.configure(text="No APFS container detected or unsupported layout.")
+            self.lbl_apfs_info.configure(text="No APFS container detected or unsupported drive layout.")
             self.btn_partition.configure(state="disabled")
             return
 
-        if not info["is_safe_to_partition"]:
-            reason_text = "Blocked: " + " | ".join(info["blocking_reasons"])
-            self.lbl_apfs_info.configure(text=reason_text, text_color="#FF3B30")
+        if not info.get("is_safe_to_partition", False):
+            reasons = " | ".join(info.get("blocking_reasons", []))
+            self.lbl_apfs_info.configure(text=f"Blocked: {reasons}", text_color="#FF3B30")
             self.btn_partition.configure(state="disabled")
         else:
-            status_text = (
-                f"Container: {info['container_id']} (Total: {info['current_gb']} GB) | "
-                f"Safe to Allocate: Up to {info['allocatable_gb']} GB (Buffer: {info['safe_buffer_gb']} GB reserved)"
+            self.lbl_apfs_info.configure(
+                text=f"Container: {info['container_id']} (Total: {info['current_gb']} GB) | Safe to allocate: Up to {info['allocatable_gb']} GB (Buffer: {info['safe_buffer_gb']} GB)",
+                text_color="#34C759"
             )
-            self.lbl_apfs_info.configure(text=status_text, text_color="#34C759")
             self.btn_partition.configure(state="normal")
-            
+
     def start_apfs_partition(self):
         try:
             size_gb = int(self.apfs_size_entry.get().strip())
@@ -322,8 +344,22 @@ class OWLPApp(ctk.CTk):
             self.iso_entry.delete(0, "end")
             self.iso_entry.insert(0, path)
 
+            # Smart default toggle based on filename inspection
+            filename_lower = os.path.basename(path).lower()
+            if "11" in filename_lower or "win11" in filename_lower:
+                self.win11_bypass_var.set(True)
+                self.lbl_iso_detected.configure(
+                    text="Detected: Windows 11 media (Hardware bypass automatically enabled).",
+                    text_color="#007AFF"
+                )
+            else:
+                self.win11_bypass_var.set(False)
+                self.lbl_iso_detected.configure(
+                    text="Detected: Windows 10 media (Standard vanilla setup; bypass disabled).",
+                    text_color="#34C759"
+                )
+
     def refresh_drives(self):
-        """Scans for safe USB drives and formats them with defensive labels."""
         self.drives = self.disk_engine.list_external_usb_drives()
         if not self.drives:
             self.drv_combo.configure(values=["No eligible safe USB drives found (>= 8GB)"])
@@ -363,19 +399,19 @@ class OWLPApp(ctk.CTk):
             messagebox.showerror("Error", "Please select a valid target USB drive.")
             return
 
-        # Defensive Warning for Large External Storage Devices (> 128 GB)
         extra_warning = ""
         if target_disk_obj.is_large_storage:
-            extra_warning = (
-                "\n\n⚠️ CAUTION: This drive is over 128 GB!\n"
-                "Verify that this is NOT your personal backup or external media drive."
-            )
+            extra_warning = "\n\n⚠️ CAUTION: This drive is over 128 GB!\nVerify that this is NOT your backup or media drive."
+
+        bypass_text = "ENABLED" if self.win11_bypass_var.get() else "DISABLED (Vanilla)"
+        drivers_text = "YES" if self.auto_drivers_var.get() else "NO"
 
         confirm = messagebox.askyesno(
             "Confirm Erase",
-            f"WARNING: ALL DATA ON {target_disk_obj.device_node} ({target_disk_obj.media_name}) WILL BE ERASED!"
-            f"{extra_warning}\n\n"
-            f"Target Model: {self.profile.friendly_name} [{self.profile.model_id}]\n\n"
+            f"WARNING: ALL DATA ON {target_disk_obj.device_node} ({target_disk_obj.media_name}) WILL BE ERASED!{extra_warning}\n\n"
+            f"Target Model: {self.profile.friendly_name} [{self.profile.model_id}]\n"
+            f"Windows 11 Bypass: {bypass_text}\n"
+            f"Auto-Driver Setup: {drivers_text}\n\n"
             "Do you want to proceed?"
         )
         if not confirm:
@@ -385,7 +421,6 @@ class OWLPApp(ctk.CTk):
         self.btn_partition.configure(state="disabled")
         self.txt_log.delete("1.0", "end")
 
-        # Pass target_disk_obj into background pipeline for fingerprint verification
         threading.Thread(target=self._run_pipeline, args=(iso, target_disk_obj), daemon=True).start()
 
     def _run_pipeline(self, iso_path, target_disk_obj):
@@ -415,7 +450,6 @@ class OWLPApp(ctk.CTk):
                 disable_dead_dgpu=self.dgpu_off_var.get()
             )
 
-            # STRICT CHECK: Never continue if OpenCore deployment or ocvalidate fails!
             if not oc.deploy_opencore():
                 raise RuntimeError(
                     "OpenCore deployment or schema validation (ocvalidate) failed!\n\n"
@@ -425,26 +459,38 @@ class OWLPApp(ctk.CTk):
             self.log("[+] OpenCore deployment and validation succeeded.")
 
             # -------------------------------------------------------------
-            # 3. Process Windows ISO (WIM splitting + Zero-Touch autounattend.xml)
+            # 3. Process Windows ISO (Dynamic Bypasses: No Hard-Coding!)
             # -------------------------------------------------------------
             self.set_status("Extracting Windows ISO & splitting WIM...", 65)
             mount = self.disk_engine.find_partition_mount("WININSTALL") or "/Volumes/WININSTALL"
-            iso_mgr = WindowsISOManager(iso_path, mount)
+
+            apply_bp = self.win11_bypass_var.get()
+            auto_drv = self.auto_drivers_var.get()
+            self.log(f"[*] Configuration: Win11 Bypass={apply_bp}, Auto-Drivers={auto_drv}")
+
+            iso_mgr = WindowsISOManager(
+                iso_path,
+                mount,
+                apply_win11_bypass=apply_bp,
+                auto_launch_drivers=auto_drv
+            )
             if not iso_mgr.process_and_copy():
                 raise RuntimeError("Failed to unpack Windows ISO or split install.wim.")
 
             # -------------------------------------------------------------
-            # 4. Download and Stage Apple Boot Camp Drivers
+            # 4. Verified Driver Staging Pipeline (Product-Keyed Cache + SHA-256)
             # -------------------------------------------------------------
-            self.set_status("Downloading Boot Camp drivers...", 85)
-            self.log(f"[*] Searching Apple catalog for {self.profile.model_id}...")
+            self.set_status("Staging Boot Camp drivers...", 85)
+            self.log(f"[*] Resolving drivers deterministically for {self.profile.model_id}...")
             driver_eng = DriverEngine(self.profile.model_id)
-            pkg = driver_eng.find_driver_package()
-            if pkg:
-                driver_eng.download_and_extract(pkg["package_url"], mount)
-                self.log("[+] Boot Camp drivers staged successfully.")
+            pkg_info = driver_eng.find_driver_package()
+
+            if pkg_info:
+                if not driver_eng.download_and_extract(pkg_info, mount):
+                    raise RuntimeError("Boot Camp driver staging or post-staging verification failed.")
+                self.log("[+] Boot Camp drivers staged and verified successfully.")
             else:
-                self.log("[!] No direct Boot Camp ESD package found in catalog.")
+                self.log("[!] Warning: No direct Boot Camp package resolved in catalogs.")
 
             self.set_status("Complete! Media Ready.", 100)
             self.log("[+] Windows USB Installer creation complete!")

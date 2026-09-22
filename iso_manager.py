@@ -1,19 +1,106 @@
+"""
+OWLP - Dynamic Windows ISO Engine
+Inspects Windows build versions and generates modular autounattend.xml
+only when explicitly requested.
+"""
+
 import os
 import sys
 import shutil
 import plistlib
 import subprocess
 import time
-from typing import Optional, Tuple
+import re
+from typing import Optional, Tuple, Dict, Any
+
+FAT32_LIMIT_BYTES = 4 * 1024 * 1024 * 1024 - (100 * 1024 * 1024)  # ~3.9 GB threshold
 
 
-# Zero-Touch Answer File:
-# 1. windowsPE pass: Bypasses TPM 2.0, Secure Boot, RAM, Storage, CPU checks.
-# 2. specialize pass: Injects BypassNRO to allow offline local account creation on Win11.
-# 3. oobeSystem pass: Automatically detects USB drive letter and launches Apple BootCamp Setup.exe on first desktop login!
-AUTOUNATTEND_XML = """<?xml version="1.0" encoding="utf-8"?>
-<unattend xmlns="urn:schemas-microsoft-com:unattend">
-    <settings pass="windowsPE">
+class WindowsISOManager:
+    def __init__(
+        self,
+        iso_path: str,
+        target_volume: str,
+        apply_win11_bypass: bool = False,
+        auto_launch_drivers: bool = True
+    ):
+        self.iso_path = os.path.abspath(os.path.expanduser(iso_path))
+        self.target_volume = os.path.abspath(target_volume)
+        self.apply_win11_bypass = apply_win11_bypass
+        self.auto_launch_drivers = auto_launch_drivers
+        self.mount_point: Optional[str] = None
+
+    def _run_cmd(self, cmd: list[str]) -> Tuple[int, str, str]:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+
+    def check_wimlib(self) -> bool:
+        return shutil.which("wimlib-imagex") is not None
+
+    def mount_iso(self) -> Optional[str]:
+        print(f"[*] Attaching Windows ISO: {os.path.basename(self.iso_path)}...")
+        cmd = ["hdiutil", "attach", self.iso_path, "-plist", "-nobrowse", "-readonly"]
+        code, stdout, stderr = self._run_cmd(cmd)
+        
+        if code != 0 or not stdout:
+            print(f"[!] Failed to attach ISO: {stderr}")
+            return None
+
+        try:
+            plist_data = plistlib.loads(stdout.encode("utf-8"))
+            for entity in plist_data.get("system-entities", []):
+                if "mount-point" in entity:
+                    self.mount_point = entity["mount-point"]
+                    return self.mount_point
+        except Exception as e:
+            print(f"[!] Failed to parse hdiutil plist: {e}")
+
+        return None
+
+    def unmount_iso(self):
+        if self.mount_point:
+            self._run_cmd(["hdiutil", "detach", self.mount_point, "-force"])
+            self.mount_point = None
+
+    def detect_windows_version(self, wim_path: str) -> Dict[str, Any]:
+        """
+        Uses wimlib-imagex to inspect the image metadata and extract the exact OS build.
+        """
+        if not self.check_wimlib():
+            return {"version": "Unknown", "build": 0, "is_win11": True}
+
+        code, stdout, _ = self._run_cmd(["wimlib-imagex", "info", wim_path, "1"])
+        if code != 0 or not stdout:
+            return {"version": "Unknown", "build": 0, "is_win11": True}
+
+        build = 0
+        build_match = re.search(r"Build:\s+(\d+)", stdout)
+        if build_match:
+            build = int(build_match.group(1))
+
+        # Windows 11 starts at Build 22000
+        is_win11 = build >= 22000
+        ver_name = "Windows 11" if is_win11 else "Windows 10" if build >= 10240 else "Legacy Windows"
+
+        return {
+            "version": ver_name,
+            "build": build,
+            "is_win11": is_win11
+        }
+
+    def generate_unattend_xml(self) -> Optional[str]:
+        """
+        Dynamically constructs autounattend.xml based on active flags.
+        Returns None if no bypasses or automations are selected (clean vanilla media).
+        """
+        if not self.apply_win11_bypass and not self.auto_launch_drivers:
+            return None  # No answer file needed!
+
+        xml_sections = []
+
+        # 1. Windows PE Pass (TPM / CPU / Secure Boot Bypass)
+        if self.apply_win11_bypass:
+            xml_sections.append("""    <settings pass="windowsPE">
         <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
             <RunSynchronous>
                 <RunSynchronousCommand wcm:action="add">
@@ -38,8 +125,11 @@ AUTOUNATTEND_XML = """<?xml version="1.0" encoding="utf-8"?>
                 </RunSynchronousCommand>
             </RunSynchronous>
         </component>
-    </settings>
-    <settings pass="specialize">
+    </settings>""")
+
+        # 2. Specialize Pass (Bypass Microsoft Account requirement on Win11)
+        if self.apply_win11_bypass:
+            xml_sections.append("""    <settings pass="specialize">
         <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
             <RunSynchronous>
                 <RunSynchronousCommand wcm:action="add">
@@ -48,110 +138,30 @@ AUTOUNATTEND_XML = """<?xml version="1.0" encoding="utf-8"?>
                 </RunSynchronousCommand>
             </RunSynchronous>
         </component>
-    </settings>
-    <settings pass="oobeSystem">
+    </settings>""")
+
+        # 3. oobeSystem Pass (Zero-Touch Driver Launcher)
+        if self.auto_launch_drivers:
+            xml_sections.append("""    <settings pass="oobeSystem">
         <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
             <FirstLogonCommands>
                 <SynchronousCommand wcm:action="add">
                     <Order>1</Order>
                     <CommandLine>cmd.exe /c for %i in (C D E F G H I J K) do if exist %i:\\BootCamp\\setup.exe (start %i:\\BootCamp\\setup.exe &amp; exit)</CommandLine>
-                    <Description>Zero-Touch: Auto-Launch Apple Boot Camp Installer</Description>
+                    <Description>Auto-Launch Apple Boot Camp Installer</Description>
                 </SynchronousCommand>
             </FirstLogonCommands>
         </component>
-    </settings>
+    </settings>""")
+
+        inner_body = "\n".join(xml_sections)
+        return f"""<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+{inner_body}
 </unattend>
 """
 
-FAT32_LIMIT_BYTES = 4 * 1024 * 1024 * 1024 - (100 * 1024 * 1024)  # ~3.9 GB threshold
-
-
-class WindowsISOManager:
-    def __init__(self, iso_path: str, target_volume: str):
-        self.iso_path = os.path.abspath(os.path.expanduser(iso_path))
-        self.target_volume = os.path.abspath(target_volume)
-        self.mount_point: Optional[str] = None
-
-    def _run_cmd(self, cmd: list[str]) -> Tuple[int, str, str]:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
-
-    def check_wimlib(self) -> bool:
-        """Verifies if wimlib-imagex is installed on the host Mac."""
-        return shutil.which("wimlib-imagex") is not None
-
-    def install_wimlib_via_brew(self) -> bool:
-        """Attempts to install wimlib via Homebrew if missing."""
-        brew_bin = shutil.which("brew")
-        if not brew_bin:
-            for path in ["/usr/local/bin/brew", "/opt/homebrew/bin/brew"]:
-                if os.path.exists(path):
-                    brew_bin = path
-                    break
-
-        if not brew_bin:
-            return False
-
-        print("[*] Homebrew detected. Installing 'wimlib' to handle WIM splitting...")
-        code, _, _ = self._run_cmd([brew_bin, "install", "wimlib"])
-        return code == 0
-
-    def mount_iso(self) -> Optional[str]:
-        """Mounts the Windows ISO via hdiutil and parses the mount path."""
-        print(f"[*] Attaching Windows ISO: {os.path.basename(self.iso_path)}...")
-        cmd = ["hdiutil", "attach", self.iso_path, "-plist", "-nobrowse", "-readonly"]
-        code, stdout, stderr = self._run_cmd(cmd)
-        
-        if code != 0 or not stdout:
-            print(f"[!] Failed to attach ISO: {stderr}")
-            return None
-
-        try:
-            plist_data = plistlib.loads(stdout.encode("utf-8"))
-            for entity in plist_data.get("system-entities", []):
-                if "mount-point" in entity:
-                    self.mount_point = entity["mount-point"]
-                    print(f"[+] ISO mounted at: {self.mount_point}")
-                    return self.mount_point
-        except Exception as e:
-            print(f"[!] Failed to parse hdiutil plist: {e}")
-
-        return None
-
-    def unmount_iso(self):
-        """Detaches the mounted ISO."""
-        if self.mount_point:
-            print(f"[*] Detaching ISO mount: {self.mount_point}...")
-            self._run_cmd(["hdiutil", "detach", self.mount_point, "-force"])
-            self.mount_point = None
-
-    def _copy_file_with_progress(self, src: str, dst: str):
-        """Copies a large file with a progress bar."""
-        total_size = os.path.getsize(src)
-        copied = 0
-        start_time = time.time()
-        chunk_size = 1024 * 1024 * 4  # 4 MB chunks
-
-        with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
-            while True:
-                buf = fsrc.read(chunk_size)
-                if not buf:
-                    break
-                fdst.write(buf)
-                copied += len(buf)
-                
-                pct = (copied / total_size) * 100
-                elapsed = time.time() - start_time
-                speed = (copied / (1024 * 1024)) / elapsed if elapsed > 0 else 0
-                mb_done = copied / (1024 * 1024)
-                mb_tot = total_size / (1024 * 1024)
-
-                sys.stdout.write(f"\r  Copying: [{pct:5.1f}%] {mb_done:.0f}/{mb_tot:.0f} MB @ {speed:.1f} MB/s")
-                sys.stdout.flush()
-        print()
-
     def process_and_copy(self) -> bool:
-        """Copies all ISO files, splits install.wim if necessary, and injects Zero-Touch bypasses."""
         if not os.path.exists(self.target_volume):
             print(f"[!] Target volume '{self.target_volume}' does not exist.")
             return False
@@ -165,33 +175,24 @@ class WindowsISOManager:
             wim_path = os.path.join(sources_dir, "install.wim")
             esd_path = os.path.join(sources_dir, "install.esd")
 
-            main_image = None
-            if os.path.exists(wim_path):
-                main_image = wim_path
-            elif os.path.exists(esd_path):
-                main_image = esd_path
-
+            main_image = wim_path if os.path.exists(wim_path) else esd_path if os.path.exists(esd_path) else None
             if not main_image:
-                print("[!] Error: Neither install.wim nor install.esd found in ISO/sources!")
+                print("[!] Error: Neither install.wim nor install.esd found in ISO!")
                 return False
 
-            image_name = os.path.basename(main_image)
+            # Detect Windows Version
+            os_info = self.detect_windows_version(main_image)
+            print(f"[*] Detected Media: {os_info['version']} (Build {os_info['build']})")
+
             image_size = os.path.getsize(main_image)
             needs_split = image_size > FAT32_LIMIT_BYTES
 
-            print(f"[*] Main Windows image detected: {image_name} ({image_size / (1024**3):.2f} GB)")
+            if needs_split and not self.check_wimlib():
+                print("[!] 'wimlib-imagex' is required to split install.wim. Install via brew or MacPorts.")
+                return False
 
-            if needs_split:
-                print("[*] Image exceeds FAT32 4GB limit. SWM splitting is required.")
-                if not self.check_wimlib():
-                    print("[!] 'wimlib-imagex' is required to split install.wim for FAT32.")
-                    installed = self.install_wimlib_via_brew()
-                    if not installed:
-                        print("[!] Please install wimlib using: 'brew install wimlib' and run again.")
-                        return False
-
-            # 1. Copy all items from ISO root except the main image file
-            print("\n[*] Copying installer boot files and directories to USB...")
+            # 1. Copy ISO base files
+            print("[*] Copying base installer files to USB...")
             for item in os.listdir(mount):
                 src_item = os.path.join(mount, item)
                 dst_item = os.path.join(self.target_volume, item)
@@ -215,35 +216,33 @@ class WindowsISOManager:
                     else:
                         shutil.copy2(src_item, dst_item)
 
-            print("[+] Base installer files copied.")
-
-            # 2. Handle the large install image
+            # 2. Write or split main image
             dst_sources = os.path.join(self.target_volume, "sources")
             if needs_split:
-                print("[*] Splitting install.wim into 3800MB .swm chunks directly to USB...")
+                print("[*] Splitting install.wim into 3800MB .swm chunks...")
                 dst_swm = os.path.join(dst_sources, "install.swm")
-                split_cmd = ["wimlib-imagex", "split", main_image, dst_swm, "3800"]
-                code, _, stderr = self._run_cmd(split_cmd)
+                code, _, stderr = self._run_cmd(["wimlib-imagex", "split", main_image, dst_swm, "3800"])
                 if code != 0:
-                    print(f"[!] Error splitting WIM file: {stderr}")
+                    print(f"[!] Split failed: {stderr}")
                     return False
-                print("[+] install.wim split and written as install.swm successfully!")
             else:
-                print(f"[*] Image fits within FAT32 limit. Copying {image_name} directly...")
-                self._copy_file_with_progress(main_image, os.path.join(dst_sources, image_name))
+                shutil.copy2(main_image, os.path.join(dst_sources, os.path.basename(main_image)))
 
-            # 3. Inject Zero-Touch autounattend.xml
-            print("[*] Injecting Zero-Touch autounattend.xml (Win11 Bypasses + Auto-Driver Launcher)...")
+            # 3. Dynamic autounattend.xml generation
+            unattend_xml = self.generate_unattend_xml()
             unattend_dst = os.path.join(self.target_volume, "autounattend.xml")
-            with open(unattend_dst, "w", encoding="utf-8") as f:
-                f.write(AUTOUNATTEND_XML)
-            print("[+] Zero-Touch autounattend.xml written to USB root.")
 
-            print("\n[+] Windows installation media preparation complete!")
+            if unattend_xml:
+                print(f"[*] Staging autounattend.xml (Win11 Bypass: {self.apply_win11_bypass}, Auto-Drivers: {self.auto_launch_drivers})...")
+                with open(unattend_dst, "w", encoding="utf-8") as f:
+                    f.write(unattend_xml)
+            else:
+                print("[*] No autounattend.xml requested. Media is 100% clean/vanilla Microsoft.")
+                if os.path.exists(unattend_dst):
+                    os.remove(unattend_dst)
+
+            print("[+] Windows media preparation completed successfully!")
             return True
 
-        except Exception as e:
-            print(f"[!] Error during ISO processing: {e}")
-            return False
         finally:
             self.unmount_iso()
