@@ -59,3 +59,8 @@ Homebrew:
 brew install python-tk@3.12
 ```
 
+# Changelog
+
+1.0.0 - Release
+1.0.1 - APFS + OpenCore reliability fixes
+1.0.2 -  Deterministic Boot Camp driver pipeline
